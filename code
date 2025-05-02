@@ -1,0 +1,337 @@
+import tkinter as tk
+from tkinter import messagebox
+import yfinance as yf
+import csv
+from datetime import datetime
+
+# ----- Financial Indicator Calculations -----
+
+# RSI Calculation (14-period)
+def calculate_rsi(data, period=14):
+    gains = []
+    losses = []
+    for i in range(1, len(data)):
+        change = data[i] - data[i - 1]
+        if change > 0:
+            gains.append(change)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(change))
+
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    rs = avg_gain / avg_loss if avg_loss != 0 else 0
+    rsi = 100 - (100 / (1 + rs))
+
+    rsi_values = [rsi]
+
+    for i in range(period, len(data)):
+        gain = gains[i]
+        loss = losses[i]
+
+        avg_gain = (avg_gain * (period - 1) + gain) / period
+        avg_loss = (avg_loss * (period - 1) + loss) / period
+
+        rs = avg_gain / avg_loss if avg_loss != 0 else 0
+        rsi_values.append(100 - (100 / (1 + rs)))
+
+    return rsi_values
+
+# EMA Calculation (Exponential Moving Average)
+def calculate_ema(data, period=20):
+    alpha = 2 / (period + 1)
+    ema_values = [data[0]]  # Starting with the first data point
+
+    for price in data[1:]:
+        ema = (price * alpha) + (ema_values[-1] * (1 - alpha))
+        ema_values.append(ema)
+
+    return ema_values
+
+# SMA Calculation (Simple Moving Average)
+def calculate_sma(data, period=20):
+    sma_values = []
+    for i in range(len(data) - period + 1):
+        sma = sum(data[i:i+period]) / period
+        sma_values.append(sma)
+    return sma_values
+
+# MACD Calculation
+def calculate_macd(data):
+    ema12 = calculate_ema(data, period=12)
+    ema26 = calculate_ema(data, period=26)
+
+    macd_values = [e12 - e26 for e12, e26 in zip(ema12, ema26)]
+    signal_values = calculate_ema(macd_values, period=9)
+
+    macd_histogram = [m - s for m, s in zip(macd_values, signal_values)]
+
+    return macd_values, signal_values, macd_histogram
+
+# ----- Main Functionality -----
+
+def get_stock_history(mode):
+    symbol = stock_entry.get().upper()
+    days = days_slider.get()
+
+    try:
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period=f"{days}d")
+
+        if hist.empty or len(hist) < 2:
+            result_label.config(text="Not enough data.")
+            return
+
+        # Get the Close price data for indicators
+        close_data = hist['Close'].tolist()
+
+        # Calculate indicators
+        rsi_values = calculate_rsi(close_data, period=14)
+        macd_values, macd_signal, macd_hist = calculate_macd(close_data)
+        sma_values = calculate_sma(close_data, period=20)
+        ema_values = calculate_ema(close_data, period=20)
+
+        # Clear old results
+        for widget in scrollable_frame.winfo_children():
+            widget.destroy()
+
+        previous_value = None
+
+        for i, (date, row) in enumerate(hist.iterrows()):
+            open_price = round(row['Open'], 2)  # Rounded to 2 decimal places
+            close_price = round(row['Close'], 2)  # Rounded to 2 decimal places
+            volume = int(row['Volume'])
+
+            # RSI, MACD, SMA, EMA values
+            rsi = rsi_values[i] if i < len(rsi_values) else None
+            macd = macd_values[i] if i < len(macd_values) else None
+            signal = macd_signal[i] if i < len(macd_signal) else None
+            macd_hist = macd_hist[i] if i < len(macd_hist) else None
+            sma = sma_values[i] if i < len(sma_values) else None
+            ema = ema_values[i] if i < len(ema_values) else None
+
+            # Text display
+            if mode == "full":
+                text = f"{date.date()}: Open=${open_price:.2f}, Close=${close_price:.2f}, Vol={volume}, RSI={rsi:.2f}, MACD={macd:.2f}, Signal={signal:.2f}, SMA={sma:.2f}, EMA={ema:.2f}"
+                compare_value = open_price
+            else:  # avg
+                avg = round((open_price + close_price) / 2, 2)  # Rounded average
+                text = f"{date.date()}: Avg=${avg:.2f}, Vol={volume}, RSI={rsi:.2f}, MACD={macd:.2f}, Signal={signal:.2f}, SMA={sma:.2f}, EMA={ema:.2f}"
+                compare_value = avg
+
+            # Color based on comparison to previous value
+            if previous_value is None:
+                color = "black"
+            elif compare_value > previous_value:
+                color = "green"
+            elif compare_value < previous_value:
+                color = "red"
+            else:
+                color = "black"
+
+            previous_value = compare_value
+
+            # Add label
+            label = tk.Label(scrollable_frame, text=text, fg=color, anchor="w",
+                             font=("Courier New", 10), bg="#f0f8ff", justify="left")
+            label.pack(fill="x", padx=5, pady=3)
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to fetch data.\n{e}")
+
+
+def save_to_csv():
+    symbol = stock_entry.get().upper()
+    days = days_slider.get()
+
+    try:
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period=f"{days}d")
+
+        if hist.empty or len(hist) < 2:
+            messagebox.showerror("Error", "Not enough data to save.")
+            return
+
+        # Get current date for file name
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        filename = f"stock_history_{date_str}.csv"
+
+        # Prepare data to save, starting with the header
+        data = []
+        data.append([symbol])  # Add the stock symbol as a row
+        data.append(["Date", "Open", "Close", "Volume", "Average", "RSI", "MACD", "Signal", "SMA", "EMA"])
+
+        # Calculate financial indicators
+        close_data = hist['Close'].tolist()
+        rsi_values = calculate_rsi(close_data, period=14)
+        macd_values, macd_signal, _ = calculate_macd(close_data)
+        sma_values = calculate_sma(close_data, period=20)
+        ema_values = calculate_ema(close_data, period=20)
+
+        for i, (date, row) in enumerate(hist.iterrows()):
+            open_price = round(row['Open'], 2)  # Rounded to 2 decimal places
+            close_price = round(row['Close'], 2)  # Rounded to 2 decimal places
+            volume = int(row['Volume'])
+
+            # Calculate average
+            avg = round((open_price + close_price) / 2, 2)  # Rounded average
+            rsi = rsi_values[i] if i < len(rsi_values) else None
+            macd = macd_values[i] if i < len(macd_values) else None
+            signal = macd_signal[i] if i < len(macd_signal) else None
+            sma = sma_values[i] if i < len(sma_values) else None
+            ema = ema_values[i] if i < len(ema_values) else None
+
+            # Append the data for this row
+            data.append([date.date(), open_price, close_price, volume, avg, rsi, macd, signal, sma, ema])
+
+        # Append to CSV (create or add to the file)
+        file_exists = False
+        try:
+            with open(filename, mode='r', newline='') as check_file:
+                file_exists = True
+        except FileNotFoundError:
+            file_exists = False
+
+        # Save to CSV
+        with open(filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+
+            # Write the header only if the file doesn't exist
+            if not file_exists:
+                writer.writerow(["Stock Symbol", "Date", "Open", "Close", "Volume", "Average", "RSI", "MACD", "Signal", "SMA", "EMA"])
+
+            # Write the stock data
+            writer.writerows(data)
+
+        messagebox.showinfo("Success", f"Stock history saved to {filename}")
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to save data.\n{e}")
+
+
+def reset_csv():
+    # Get current date for file name
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    filename = f"stock_history_{date_str}.csv"
+
+    try:
+        # Delete the file by opening it in write mode, effectively clearing it
+        with open(filename, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            # Optionally write a header if you want
+            writer.writerow(["Stock Symbol", "Date", "Open", "Close", "Volume", "Average", "RSI", "MACD", "Signal", "SMA", "EMA"])
+
+        messagebox.showinfo("Success", "CSV file has been reset.")
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to reset the CSV file.\n{e}")
+
+
+def top_stocks():
+    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NFLX", "META"]
+    movers = []
+
+    try:
+        for symbol in symbols:
+            stock = yf.Ticker(symbol)
+            hist = stock.history(period="2d")
+
+            if len(hist) < 2:
+                continue
+
+            prev_close = hist['Close'].iloc[0]
+            open_price = hist['Open'].iloc[1]
+            change_percent = ((open_price - prev_close) / prev_close) * 100
+
+            movers.append((symbol, change_percent))
+
+        movers.sort(key=lambda x: abs(x[1]), reverse=True)
+
+        text = "🌟 Top 5 Movers 🌟\n(Change from Prev Day):\n"
+        for i in range(min(5, len(movers))):
+            symbol, change = movers[i]
+            text += f"{symbol}: {change:+.2f}%\n"
+
+        top_stocks_label.config(text=text)
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to fetch top stocks data.\n{e}")
+
+
+# ----- GUI Setup -----
+
+root = tk.Tk()
+root.title("📈 Stock History Tracker")
+root.geometry("670x550")
+root.configure(bg="#e6f2ff")
+
+# Top label (Top Movers)
+top_stocks_label = tk.Label(root, text="", font=("Comic Sans MS", 12, "bold"),
+                            bg="#ccf5ff", fg="#003366", anchor="w", justify="left")
+top_stocks_label.place(x=10, y=10)
+
+# Stock Symbol Entry
+tk.Label(root, text="Enter Stock Symbol:", font=("Helvetica", 14, "bold"),
+         bg="#e6f2ff", fg="#003366").pack(pady=(60, 5))
+stock_entry = tk.Entry(root, font=("Helvetica", 12), bg="#ffffff")
+stock_entry.pack(pady=5)
+
+# Days Slider
+tk.Label(root, text="Select Number of Days:", font=("Helvetica", 12),
+         bg="#e6f2ff", fg="#003366").pack(pady=5)
+days_slider = tk.Scale(root, from_=2, to=30, orient=tk.HORIZONTAL,
+                       font=("Helvetica", 10), bg="#cce0ff", troughcolor="#b3d1ff")
+days_slider.set(5)
+days_slider.pack(pady=5)
+
+# Buttons for mode selection
+button_frame = tk.Frame(root, bg="#e6f2ff")
+button_frame.pack(pady=5)
+
+tk.Button(button_frame, text="Open + Close", font=("Comic Sans MS", 10, "bold"),
+          bg="#99ccff", fg="#003366", activebackground="#66b3ff",
+          command=lambda: get_stock_history("full")).pack(side="left", padx=5)
+
+tk.Button(button_frame, text="Daily Avg", font=("Comic Sans MS", 10, "bold"),
+          bg="#99ccff", fg="#003366", activebackground="#66b3ff",
+          command=lambda: get_stock_history("avg")).pack(side="left", padx=5)
+
+# Save to CSV Button
+tk.Button(button_frame, text="Save to CSV", font=("Comic Sans MS", 10, "bold"),
+          bg="#99ccff", fg="#003366", activebackground="#66b3ff",
+          command=save_to_csv).pack(side="left", padx=5)
+
+# Reset CSV Button
+tk.Button(button_frame, text="Reset CSV", font=("Comic Sans MS", 10, "bold"),
+          bg="#ff6666", fg="#003366", activebackground="#ff4d4d",
+          command=reset_csv).pack(side="left", padx=5)
+
+# Scrollable Frame Setup
+scroll_frame_container = tk.Frame(root, bg="#e6f2ff")
+scroll_frame_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+canvas = tk.Canvas(scroll_frame_container, bg="#f0f8ff", bd=1, relief="solid", height=260)
+scrollbar = tk.Scrollbar(scroll_frame_container, orient="vertical", command=canvas.yview)
+
+scrollable_frame = tk.Frame(canvas, bg="#f0f8ff", padx=10, pady=10)
+scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+canvas.configure(yscrollcommand=scrollbar.set)
+
+canvas.pack(side="left", fill="both", expand=True)
+scrollbar.pack(side="right", fill="y")
+
+# Result label for feedback
+result_label = tk.Label(root, text="", font=("Helvetica", 12), bg="#e6f2ff", fg="red")
+result_label.pack(fill="x", padx=5, pady=3)
+
+# Auto refresh top movers every 60s
+def auto_refresh():
+    top_stocks()
+    root.after(60000, auto_refresh)
+
+auto_refresh()
+root.mainloop()
