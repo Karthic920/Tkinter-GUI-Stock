@@ -1,170 +1,279 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 import yfinance as yf
-import csv
-from datetime import datetime
-import threading
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg  # Correct import
 import os
+import csv
 
-# ---------- Helper Functions ----------
+# ------------------- Constants -------------------
+TOP_STOCKS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NFLX", "META"]
+CACHE_DIR = 'cache'
 
-def fetch_stock_history(symbol, days):
-    stock = yf.Ticker(symbol)
-    hist = stock.history(period=f"{days}d")
-    return hist
+# Create the cache directory if it doesn't exist
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
 
-def calculate_avg(open_price, close_price):
-    return round((open_price + close_price) / 2, 2)
 
-def save_to_csv():
-    symbol = stock_entry.get().upper()
-    days = days_slider.get()
-    try:
-        hist = fetch_stock_history(symbol, days)
-        if hist.empty:
-            messagebox.showerror("Error", "Not enough data to save.")
-            return
-
-        filename = f"stock_history_{datetime.now().strftime('%Y-%m-%d')}.csv"
-        write_header = not os.path.exists(filename) or os.path.getsize(filename) == 0
-
-        with open(filename, mode='a', newline='') as file:
-            writer = csv.writer(file)
-
-            if write_header:
-                writer.writerow(["Symbol", "Date", "Open", "Close", "Average", "Volume"])
-
-            for date, row in hist.iterrows():
-                open_p = round(row['Open'], 2)
-                close_p = round(row['Close'], 2)
-                avg = calculate_avg(open_p, close_p)
-                volume = int(row['Volume'])
-                writer.writerow([symbol, date.date(), open_p, close_p, avg, volume])
-
-        messagebox.showinfo("Success", f"Data saved to {filename}")
-
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to save CSV.\n{e}")
-
-def reset_csv():
-    filename = f"stock_history_{datetime.now().strftime('%Y-%m-%d')}.csv"
-    try:
-        with open(filename, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Symbol", "Date", "Open", "Close", "Average", "Volume"])
-        messagebox.showinfo("Success", f"{filename} reset.")
-    except Exception as e:
-        messagebox.showerror("Error", f"Failed to reset CSV.\n{e}")
+# ------------------- Main Functions -------------------
 
 def get_stock_history(mode):
     symbol = stock_entry.get().upper()
     days = days_slider.get()
 
     try:
-        hist = fetch_stock_history(symbol, days)
-        if hist.empty:
-            result_label.config(text="No data available.")
+        # Check if the data is already cached
+        cache_file = os.path.join(CACHE_DIR, f"{symbol}_{days}.txt")
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as file:
+                hist = [line.strip() for line in file.readlines()]
+        else:
+            stock = yf.Ticker(symbol)
+            hist_data = stock.history(period="max")  # Get all data
+            hist_data = hist_data.tail(days)  # Limit to the exact number of rows
+
+            # Save to cache as a text file
+            with open(cache_file, 'w') as file:
+                for index, row in hist_data.iterrows():
+                    file.write(f"{index.date()} {row['Open']} {row['Close']} {row['Volume']}\n")
+            hist = [f"{index.date()} {row['Open']} {row['Close']} {row['Volume']}" for index, row in
+                    hist_data.iterrows()]
+
+        if not hist or len(hist) < 2:
+            result_label.config(text="Not enough data.")
             return
 
-        # Clear previous output
+        # Clear old results
         for widget in scrollable_frame.winfo_children():
             widget.destroy()
 
         previous_value = None
 
-        for date, row in hist.iterrows():
-            open_p = round(row['Open'], 2)
-            close_p = round(row['Close'], 2)
-            volume = int(row['Volume'])
+        for line in hist:
+            date, open_price, close_price, volume = line.split()
+            open_price, close_price = round(float(open_price), 2), round(float(close_price), 2)
+
+            # Ensure volume is parsed as an integer
+            try:
+                volume = int(float(volume))
+            except ValueError:
+                volume = 0  # Default to 0 if there's an issue with parsing
 
             if mode == "full":
-                text = f"{date.date()}: Open=${open_p:.2f}, Close=${close_p:.2f}, Vol={volume}"
-                current_value = open_p
-            else:
-                avg = calculate_avg(open_p, close_p)
-                text = f"{date.date()}: Avg=${avg:.2f}, Vol={volume}"
-                current_value = avg
+                text = f"{date}: Open=${open_price:.2f}, Close=${close_price:.2f}, Vol={volume}"
+                compare_value = open_price
+            else:  # average
+                avg = round((open_price + close_price) / 2, 2)
+                text = f"{date}: Avg=${avg:.2f}, Vol={volume}"
+                compare_value = avg
 
-            # Color based on change
+            # Color change
             if previous_value is None:
                 color = "black"
-            elif current_value > previous_value:
+            elif compare_value > previous_value:
                 color = "green"
-            elif current_value < previous_value:
+            elif compare_value < previous_value:
                 color = "red"
             else:
                 color = "black"
 
-            previous_value = current_value
+            previous_value = compare_value
 
-            label = tk.Label(scrollable_frame, text=text, fg=color,
-                             font=("Courier New", 10), bg="#f0f8ff", anchor="w", justify="left")
-            label.pack(fill="x", padx=5, pady=2)
+            label = tk.Label(scrollable_frame, text=text, fg=color, anchor="w",
+                             font=("Courier New", 10), bg="#f0f8ff", justify="left")
+            label.pack(fill="x", padx=5, pady=3)
 
     except Exception as e:
-        messagebox.showerror("Error", f"Error fetching data.\n{e}")
+        messagebox.showerror("Error", f"Failed to fetch data.\n{e}")
 
-def fetch_top_movers():
-    symbols = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "META", "NFLX"]
+
+def top_movers():
     movers = []
-
-    try:
-        for symbol in symbols:
+    for symbol in TOP_STOCKS:
+        try:
             stock = yf.Ticker(symbol)
             hist = stock.history(period="2d")
             if len(hist) < 2:
                 continue
-
-            prev_close = hist['Close'].iloc[0]
-            open_price = hist['Open'].iloc[1]
-            change = ((open_price - prev_close) / prev_close) * 100
+            open_price = hist['Open'][0]
+            close_price = hist['Close'][-1]
+            change = ((close_price - open_price) / open_price) * 100
             movers.append((symbol, change))
+        except Exception:
+            continue
 
-        movers.sort(key=lambda x: abs(x[1]), reverse=True)
+    movers.sort(key=lambda x: abs(x[1]), reverse=True)
+    text = "📈 Top 5 Movers:\n"
+    for symbol, change in movers[:5]:
+        text += f"{symbol}: {change:+.2f}%\n"
+    top_label.config(text=text)
 
-        text = "🌟 Top 5 Movers 🌟\n"
-        for symbol, change in movers[:5]:
-            text += f"{symbol}: {change:+.2f}%\n"
 
-        top_movers_label.config(text=text)
+def auto_refresh():
+    top_movers()
+    root.after(60000, auto_refresh)
+
+
+# New function to create a graph
+def show_stock_graph():
+    symbol = stock_entry.get().upper()
+    days = days_slider.get()
+
+    try:
+        # Check if the data is already cached
+        cache_file = os.path.join(CACHE_DIR, f"{symbol}_{days}.txt")
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as file:
+                hist = [line.strip() for line in file.readlines()]
+        else:
+            stock = yf.Ticker(symbol)
+            hist_data = stock.history(period="max")
+            hist_data = hist_data.tail(days)  # Limit to selected number of days
+
+            # Save to cache as a text file
+            with open(cache_file, 'w') as file:
+                for index, row in hist_data.iterrows():
+                    file.write(f"{index.date()} {row['Open']} {row['Close']} {row['Volume']}\n")
+            hist = [f"{index.date()} {row['Open']} {row['Close']} {row['Volume']}" for index, row in hist_data.iterrows()]
+
+        if not hist or len(hist) < 2:
+            messagebox.showerror("Error", "Not enough data for graph.")
+            return
+
+        # Prepare data for plotting
+        dates = []
+        close_prices = []
+
+        for line in hist:
+            date, open_price, close_price, volume = line.split()
+            close_prices.append(float(close_price))
+            dates.append(date)
+
+        # Create a new window for the graph
+        graph_window = tk.Toplevel(root)
+        graph_window.title(f"{symbol} Stock Price")
+        graph_window.geometry("800x600")
+
+        # Plot the stock data using matplotlib
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.plot(dates, close_prices, label="Close Price", color='blue', linestyle='-', marker='o')
+        ax.set_title(f"{symbol} Stock Price", fontsize=14)
+        ax.set_xlabel("Date")
+        ax.set_ylabel("Price (USD)")
+        ax.grid(True)
+        ax.legend()
+
+        # Rotate x-ticks and reduce frequency of labels to avoid overlap
+        step = max(1, len(dates) // 10)  # Display at most 10 ticks
+        ax.set_xticks(dates[::step])  # Show every `step`-th date
+        plt.xticks(rotation=45)
+
+        plt.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=graph_window)  # Correct canvas initialization
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        canvas.draw()
 
     except Exception as e:
-        top_movers_label.config(text="⚠️ Top movers failed (rate limit).")
+        messagebox.showerror("Error", f"Failed to fetch data for graph.\n{e}")
 
-def start_top_movers_thread():
-    thread = threading.Thread(target=fetch_top_movers)
-    thread.daemon = True
-    thread.start()
 
-# ---------- GUI Setup ----------
+# Function to download data as CSV
+def download_csv():
+    symbol = stock_entry.get().upper()
+    days = days_slider.get()
+
+    try:
+        # Check if the data is already cached
+        cache_file = os.path.join(CACHE_DIR, f"{symbol}_{days}.txt")
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as file:
+                hist = [line.strip() for line in file.readlines()]
+        else:
+            stock = yf.Ticker(symbol)
+            hist_data = stock.history(period="max")
+            hist_data = hist_data.tail(days)  # Limit to selected number of days
+
+            # Save to cache as a text file
+            with open(cache_file, 'w') as file:
+                for index, row in hist_data.iterrows():
+                    file.write(f"{index.date()} {row['Open']} {row['Close']} {row['Volume']}\n")
+            hist = [f"{index.date()} {row['Open']} {row['Close']} {row['Volume']}" for index, row in
+                    hist_data.iterrows()]
+
+        if not hist:
+            messagebox.showerror("Error", "No data to download.")
+            return
+
+        # Prompt to select a location to save the CSV file
+        file_path = filedialog.asksaveasfilename(defaultextension=".csv",
+                                                 filetypes=[("CSV files", "*.csv")])
+        if file_path:
+            with open(file_path, 'w', newline='') as csvfile:
+                writer = csv.writer(csvfile)
+                writer.writerow(['Date', 'Open', 'Close', 'Volume'])  # Header
+                for line in hist:
+                    date, open_price, close_price, volume = line.split()
+                    writer.writerow([date, open_price, close_price, volume])
+
+            messagebox.showinfo("Success", f"Data successfully downloaded to {file_path}")
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to download data.\n{e}")
+
+
+# Function to reset data (clear cache and labels)
+def reset_data():
+    symbol = stock_entry.get().upper()
+    days = days_slider.get()
+
+    try:
+        cache_file = os.path.join(CACHE_DIR, f"{symbol}_{days}.txt")
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
+            messagebox.showinfo("Success", "Data reset successfully!")
+        else:
+            messagebox.showwarning("Warning", "No cached data to reset.")
+
+        # Clear result labels
+        result_label.config(text="")
+        for widget in scrollable_frame.winfo_children():
+            widget.destroy()
+
+    except Exception as e:
+        messagebox.showerror("Error", f"Failed to reset data.\n{e}")
+
+
+# ------------------- GUI Setup -------------------
 
 root = tk.Tk()
-root.title("📈 Stock Tracker")
-root.geometry("680x550")
+root.title("📊 Stock Viewer")
+root.geometry("670x550")
 root.configure(bg="#e6f2ff")
 
-# Top Movers Label
-top_movers_label = tk.Label(root, text="", font=("Comic Sans MS", 12, "bold"),
-                            bg="#ccf5ff", fg="#003366", anchor="nw", justify="left")
-top_movers_label.place(x=10, y=10)
+# Top 5 Movers Label (always top-left)
+top_label = tk.Label(root, text="", font=("Helvetica", 11, "bold"),
+                     bg="#e6f2ff", fg="#003366", justify="left", anchor="w")
+top_label.place(x=10, y=10)
 
 # Stock Symbol Entry
-tk.Label(root, text="Stock Symbol:", font=("Helvetica", 14, "bold"),
+tk.Label(root, text="Enter Stock Symbol:", font=("Helvetica", 14, "bold"),
          bg="#e6f2ff", fg="#003366").pack(pady=(60, 5))
 stock_entry = tk.Entry(root, font=("Helvetica", 12), bg="#ffffff")
 stock_entry.pack(pady=5)
 
 # Days Slider
-tk.Label(root, text="Days of History:", font=("Helvetica", 12),
+tk.Label(root, text="Select Number of Days:", font=("Helvetica", 12),
          bg="#e6f2ff", fg="#003366").pack(pady=5)
-days_slider = tk.Scale(root, from_=2, to=365, orient=tk.HORIZONTAL,
-                       font=("Helvetica", 10), bg="#cce0ff", troughcolor="#b3d1ff")
-days_slider.set(5)
+days_slider = tk.Scale(root, from_=2, to=252, orient=tk.HORIZONTAL,
+                       font=("Helvetica", 10), bg="#cce0ff", troughcolor="#b3d1ff",
+                       label="Trading Days")
+
+days_slider.set(30)
 days_slider.pack(pady=5)
 
-# Buttons Frame
+# Mode Buttons
 button_frame = tk.Frame(root, bg="#e6f2ff")
-button_frame.pack(pady=10)
+button_frame.pack(pady=5)
 
 tk.Button(button_frame, text="Open + Close", font=("Comic Sans MS", 10, "bold"),
           bg="#99ccff", fg="#003366", activebackground="#66b3ff",
@@ -174,33 +283,53 @@ tk.Button(button_frame, text="Daily Avg", font=("Comic Sans MS", 10, "bold"),
           bg="#99ccff", fg="#003366", activebackground="#66b3ff",
           command=lambda: get_stock_history("avg")).pack(side="left", padx=5)
 
-tk.Button(button_frame, text="Save to CSV", font=("Comic Sans MS", 10, "bold"),
+# New button to open graph window
+tk.Button(button_frame, text="Show Graph", font=("Comic Sans MS", 10, "bold"),
           bg="#99ccff", fg="#003366", activebackground="#66b3ff",
-          command=save_to_csv).pack(side="left", padx=5)
+          command=show_stock_graph).pack(side="left", padx=5)
 
-tk.Button(button_frame, text="Reset CSV", font=("Comic Sans MS", 10, "bold"),
-          bg="#ff9999", fg="#003366", activebackground="#ff6666",
-          command=reset_csv).pack(side="left", padx=5)
+# New buttons for CSV download and reset
+tk.Button(button_frame, text="Download CSV", font=("Comic Sans MS", 10, "bold"),
+          bg="#99ccff", fg="#003366", activebackground="#66b3ff",
+          command=download_csv).pack(side="left", padx=5)
 
-# Scrollable Results Area
-scroll_container = tk.Frame(root, bg="#e6f2ff")
-scroll_container.pack(fill="both", expand=True, padx=10, pady=10)
+tk.Button(button_frame, text="Reset Data", font=("Comic Sans MS", 10, "bold"),
+          bg="#99ccff", fg="#003366", activebackground="#66b3ff",
+          command=reset_data).pack(side="left", padx=5)
 
-canvas = tk.Canvas(scroll_container, bg="#f0f8ff", height=250)
-scrollbar = tk.Scrollbar(scroll_container, orient="vertical", command=canvas.yview)
+# Scrollable Frame
+scroll_frame_container = tk.Frame(root, bg="#e6f2ff")
+scroll_frame_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+canvas = tk.Canvas(scroll_frame_container, bg="#f0f8ff", bd=1, relief="solid", height=260)
+scrollbar = tk.Scrollbar(scroll_frame_container, orient="vertical", command=canvas.yview)
 scrollable_frame = tk.Frame(canvas, bg="#f0f8ff", padx=10, pady=10)
 
 scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
 canvas.configure(yscrollcommand=scrollbar.set)
 
-canvas.pack(side="left", fill="both", expand=True)
 scrollbar.pack(side="right", fill="y")
+canvas.pack(side="left", fill="both", expand=True)
 
-# Error/Feedback Label
-result_label = tk.Label(root, text="", font=("Helvetica", 12), bg="#e6f2ff", fg="red")
-result_label.pack(fill="x", padx=10, pady=3)
+# Result Label
+result_label = tk.Label(root, text="", font=("Helvetica", 12), bg="#e6f2ff")
+result_label.pack(pady=5)
 
-# Initialize top movers
-start_top_movers_thread()
+# ------------------- Start Auto-refresh -------------------
+auto_refresh()
+
+# ------------------- Keyboard Shortcuts -------------------
+
+def bind_shortcuts():
+    root.bind("<Control-o>", lambda e: get_stock_history("full"))
+    root.bind("<Control-a>", lambda e: get_stock_history("avg"))
+    root.bind("<Control-g>", lambda e: show_stock_graph())
+    root.bind("<Control-d>", lambda e: download_csv())
+    root.bind("<Control-r>", lambda e: reset_data())
+    root.bind("<Control-q>", lambda e: root.quit())
+
+bind_shortcuts()
+
+# ------------------- Run the GUI -------------------
 root.mainloop()
